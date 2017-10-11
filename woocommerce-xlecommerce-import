@@ -1,0 +1,171 @@
+<?php
+/*
+Plugin Name: XLEcommerce SupplierLink Import for Woocommerce
+Plugin URI: http://xlecommerce.com/
+Description: Import Products, Categories, and Orders from SupplierLink to Woocommerce
+Author: XLEcommerce
+Version: 1.2.1
+Author URI: http://xlecommerce.com/
+*/
+include("languages/woocommerce-xlecommerce-import_lang.php");
+function wpdocs_register_my_XLEcommerce_menu_page(){
+    add_menu_page( 
+        __( 'XLEcommerce Import', 'textdomain' ),
+        'XLEcommerce',
+        'manage_options',
+        'woocommerce-XLEcommerce-import',
+        'my_XLEcommerce_menu_page',
+        plugins_url( 'woocommerce-xlecommerce-import/images/icon.png' ),
+        999
+    ); 
+}
+add_action( 'admin_menu', 'wpdocs_register_my_XLEcommerce_menu_page' );
+ 
+function my_XLEcommerce_menu_page(){
+   woocommerce_xlecommerce_submenu_page_callback();
+}
+
+if ( in_array( 'woocommerce/woocommerce.php', apply_filters( 'active_plugins', get_option( 'active_plugins' ) ) ) ) {
+	
+	function woocommerce_xlecommerce_submenu_page_callback() {
+		global $wpdb;
+		
+		$wpdb->get_results("CREATE TABLE IF NOT EXISTS `temp_inventory_data` (
+		  `sku` varchar(24) NOT NULL,
+		  `quantity` int(11) NOT NULL,
+		  `last_modified` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		  `post_id` int(11) NOT NULL,
+		  `to_update` tinyint(2) NOT NULL DEFAULT '0' COMMENT '0 = do not update, 1 = update',
+          KEY idx_sku (sku)
+		) ENGINE=MyISAM DEFAULT CHARSET=latin1;",ARRAY_A);
+		
+		if(!empty($_POST)){
+				
+				if($_POST['save'] == 'configuration'){
+					// save XLEcommerce Account data to database
+					$options['wp_cron'] 					= isset($_POST['wp_cron']) ? $_POST['wp_cron'] : 0;
+					$options['retailer_token'] 				= $_POST['retailer_token'];
+					$options['path_xlecommerce_feed_dir'] 	= $_POST['path_xlecommerce_feed_dir'];
+					$options['default_markup']  			= $_POST['default_markup'];
+					$options['default_roundoff']  			= $_POST['default_roundoff'];
+				  
+					update_option( 'xle_settings', $options );
+					
+					echo '<script type="text/javascript">alert("Configuration saved successfully.");</script>';
+					
+				}
+		}
+		
+		$xle_data = get_option( 'xle_settings' );
+		?>
+        
+
+<h3 align="center" style="text-decoration:underline;">Import Data From XLEcommerce Feeds</h3>
+<form action="" method="post">
+  <input type="hidden" name="save" value="configuration" />
+  
+  
+  <table cellpadding="5" cellspacing="5" width="100%">
+    <tr>
+      <th colspan="3" align="left">XLEcommerce Account</th>
+    </tr>
+    <tr>
+      <td width="20%">Token</td>
+      <td>:</td>
+      <td><input type="text" name="retailer_token" value="<?php echo $xle_data['retailer_token']; ?>" size="50"></td>
+    </tr>
+    <tr>
+      <td>Path to XLEcommerce feed directory</td>
+      <td>:</td>
+      <td><input type="text" name="path_xlecommerce_feed_dir" value="<?php echo $xle_data['path_xlecommerce_feed_dir']; ?>" size="50"></td>
+    </tr>
+    <tr>
+      <td>Markup</td>
+      <td>:</td>
+      <td><input type="text" name="default_markup" value="<?php echo $xle_data['default_markup']; ?>"></td>
+    </tr>
+    <tr>
+      <td>Round Off</td>
+      <td>:</td>
+      <td><input type="text" name="default_roundoff" value="<?php echo $xle_data['default_roundoff']; ?>" /></td>
+    </tr>
+    <tr>
+      <td>Enable WP Cron <br /> <span style="font-size: 10px;font-weight: bold;"><?php echo CRON_SCHEDULE_TEXT; ?></span></td>
+      <td valign="top">:</td>
+      <td valign="top"><input type="checkbox" name="wp_cron" value="1" <?php if($xle_data['wp_cron'] == 1) echo 'checked'; ?> /></td>
+    </tr>
+    <tr>
+      <td colspan="3"><input type="submit" value="Save Configuration" class="button button-primary button-large"></td>
+    </tr>
+  </table>
+</form>
+<br />
+<hr />
+
+<div class="box">
+<p style="color:#FF0000; text-decoration:underline;"><?php echo TEXT_CRON_SETUP_HEADING; ?></p>
+<?php echo TEXT_CRON_SETUP_INSTRUCTION; ?></div>
+<style type="text/css">
+.box {
+    width: 90%;
+    padding: 10px;
+    border: 5px solid gray;
+    margin: 0;
+}
+</style>
+<?php
+	}
+}
+
+// add custom interval
+function cron_add_minute( $schedules ) {
+	// Adds once every minute to the existing schedules.
+    $schedules['every15minute'] = array(
+	    'interval' => 900,
+	    'display' => __( 'Once Every 15 Minute' )
+    );
+    return $schedules;
+}
+add_filter( 'cron_schedules', 'cron_add_minute' );
+
+// create a scheduled event (if it does not exist already)
+function cronstarter_activation() {
+	if( !wp_next_scheduled( 'my_inventory_cronjob' ) ) {  
+	   wp_schedule_event( time(), 'every15minute', 'my_inventory_cronjob' );  
+	}
+	if( !wp_next_scheduled( 'my_product_cronjob' ) ) {  
+	   wp_schedule_event( time(), 'daily', 'my_product_cronjob' );  
+	}
+}
+// and make sure it's called whenever WordPress loads
+add_action('wp', 'cronstarter_activation');
+
+// unschedule event upon plugin deactivation
+function cronstarter_deactivate() {	
+	// find out when the last event was scheduled
+	$timestamp_inventory = wp_next_scheduled ('my_inventory_cronjob');
+	// unschedule previous event if any
+	wp_unschedule_event ($timestamp_inventory, 'my_inventory_cronjob');
+	
+	// find out when the last event was scheduled
+	$timestamp_product = wp_next_scheduled ('my_product_cronjob');
+	// unschedule previous event if any
+	wp_unschedule_event ($timestamp_product, 'my_product_cronjob');
+} 
+register_deactivation_hook (__FILE__, 'cronstarter_deactivate');
+
+// here's the function we'd like to call with our cron job
+function inventory_function() {
+	include($_SERVER['DOCUMENT_ROOT']."/wp-content/plugins/woocommerce-xlecommerce-import/crons/woocommerce-xlecommerce-import-inventory_cron.php");
+}
+
+function product_function() {
+	include($_SERVER['DOCUMENT_ROOT']."/wp-content/plugins/woocommerce-xlecommerce-import/crons/woocommerce-xlecommerce-import_cron.php");
+}
+
+if(isset($xle_data['wp_cron']) && $xle_data['wp_cron'] == 1){
+	// hook that function onto our scheduled event:
+	add_action ('my_inventory_cronjob', 'inventory_function'); 
+	add_action ('my_product_cronjob', 'product_function'); 
+}
+?>
